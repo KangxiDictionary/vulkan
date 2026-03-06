@@ -92,6 +92,7 @@ struct MyVertex {
 // 定义 Push Constants，包含我们的 MVP 矩阵
 #[repr(C)]
 #[derive(BufferContents)] // 必须派生这个才能传给 Vulkan
+#[allow(dead_code)]
 struct PushConstants {
     model: [[f32; 4]; 4],
     view: [[f32; 4]; 4],
@@ -99,6 +100,7 @@ struct PushConstants {
 }
 
 #[repr(C)]
+#[allow(dead_code)]
 struct SceneConstants {
     view_proj: [[f32; 4]; 4],
     model: [[f32; 4]; 4],
@@ -156,63 +158,20 @@ impl App {
         }
     }
 
-    /// 抽屉 2：准备 GPU 资源（顶点缓存和渲染管线）
-    fn init_resources(&mut self) {
+    /// 细分功能：专门负责管线创建
+    fn create_graphics_pipeline(
+        &self,
+        render_pass: Arc<RenderPass>,
+        vs: vulkano::shader::EntryPoint, // 建议直接传 EntryPoint，类型更安全
+        fs: vulkano::shader::EntryPoint,
+    ) -> Arc<GraphicsPipeline> {
         let device = self.context.device().clone();
-        let allocator = self.context.memory_allocator();
 
-        // --- 创建顶点缓存 ---
-        let vertices = [
-            MyVertex {
-                position: [0.0, -0.5, 0.0],
-                color: [1.0, 0.0, 0.0],
-            }, // 红色顶点
-            MyVertex {
-                position: [-0.5, 0.5, 0.0],
-                color: [0.0, 1.0, 0.0],
-            }, // 绿色顶点
-            MyVertex {
-                position: [0.5, 0.5, 0.0],
-                color: [0.0, 0.0, 1.0],
-            }, // 蓝色顶点
-        ];
-        self.vertex_buffer = Some(
-            Buffer::from_iter(
-                allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::VERTEX_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                vertices,
-            )
-            .unwrap(),
-        );
-
-        // --- 创建渲染通路 (Render Pass) ---
-        let render_pass = vulkano::single_pass_renderpass!(
-            device.clone(),
-            attachments: { color: { format: self.windows.get_primary_renderer().unwrap().swapchain_format(), samples: 1, load_op: Clear, store_op: Store } },
-            pass: { color: [color], depth_stencil: {} }
-        ).unwrap();
-
-        // --- 创建管线 (Pipeline) ---
-        let vs = vs::load(device.clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
-        let fs = fs::load(device.clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
         let stages = [
             PipelineShaderStageCreateInfo::new(vs.clone()),
             PipelineShaderStageCreateInfo::new(fs.clone()),
         ];
+
         let layout = PipelineLayout::new(
             device.clone(),
             PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
@@ -221,7 +180,7 @@ impl App {
         )
         .unwrap();
 
-        let pipeline = GraphicsPipeline::new(
+        GraphicsPipeline::new(
             device.clone(),
             None,
             GraphicsPipelineCreateInfo {
@@ -243,30 +202,134 @@ impl App {
                         .num_color_attachments(),
                     ColorBlendAttachmentState::default(),
                 )),
-                subpass: Some(Subpass::from(render_pass.clone(), 0).unwrap().into()),
+                subpass: Some(Subpass::from(render_pass, 0).unwrap().into()),
                 ..GraphicsPipelineCreateInfo::layout(layout)
             },
         )
+        .expect("创建 GraphicsPipeline 失败")
+    }
+
+    /// 细分功能：专门负责顶点缓冲上传
+    fn create_vertex_buffer(&self, vertices: Vec<MyVertex>) -> Subbuffer<[MyVertex]> {
+        Buffer::from_iter(
+            self.context.memory_allocator().clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            vertices,
+        )
+        .expect("创建顶点缓存失败")
+    }
+
+    /// 功能切割：将 MVP 矩阵计算独立出来
+    fn compute_mvp(
+        &self,
+        width: f32,
+        height: f32,
+        elapsed_f32: f32,
+    ) -> (
+        cgmath::Matrix4<f32>,
+        cgmath::Matrix4<f32>,
+        cgmath::Matrix4<f32>,
+    ) {
+        use cgmath::{Deg, Matrix4, Point3, Rad, Vector3};
+
+        // --- 逻辑层：使用 f64 确保万亿米外的精度 ---
+        let elapsed_f64 = elapsed_f32 as f64;
+
+        // 假设方块在极远的地方 (例如 1,000,000.0)
+        let world_pos_f64 = Vector3::new(0.0, 0.0, 0.0);
+
+        // 使用 f64 计算旋转和位移
+        let model_f64 =
+            Matrix4::from_translation(world_pos_f64) * Matrix4::from_angle_y(Rad(elapsed_f64));
+
+        // --- 渲染层：转换为 f32 提交给 GPU ---
+        // .cast() 是 cgmath 提供的转换方法
+        let model_f32: Matrix4<f32> = model_f64.cast().unwrap();
+
+        let view = Matrix4::look_at_rh(
+            Point3::new(0.0, 0.0, -2.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::unit_y(),
+        );
+
+        let mut proj = cgmath::perspective(Deg(90.0), width / height, 0.01, 100.0);
+        proj[1][1] *= -1.0;
+
+        (model_f32, view, proj)
+    }
+
+    /// 抽屉 2：准备 GPU 资源（顶点缓存和渲染管线）
+    fn init_resources(&mut self) {
+        let device = self.context.device().clone();
+
+        // 1. 初始化顶点数据（使用我们封装的 create_vertex_buffer）
+        let vertices = vec![
+            MyVertex {
+                position: [0.0, -0.5, 0.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, 0.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.0],
+                color: [0.0, 0.0, 1.0],
+            },
+        ];
+        self.vertex_buffer = Some(self.create_vertex_buffer(vertices));
+
+        // 2. 创建渲染通路 (Render Pass)
+        // 这里的格式必须与交换链一致
+        let render_pass = vulkano::single_pass_renderpass!(
+            device.clone(),
+            attachments: {
+                color: {
+                    format: self.windows.get_primary_renderer().unwrap().swapchain_format(),
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: Store
+                }
+            },
+            pass: { color: [color], depth_stencil: {} }
+        )
         .unwrap();
 
+        // 3. 加载着色器入口并创建管线
+        let vs = vs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let fs = fs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+
+        // 使用你刚才定义的 create_graphics_pipeline 细分函数
+        self.pipeline = Some(self.create_graphics_pipeline(render_pass.clone(), vs, fs));
         self.render_pass = Some(render_pass);
-        self.pipeline = Some(pipeline);
+
+        println!("GPU 资源初始化完成。");
     }
 
     /// 抽屉 3：每一帧的渲染逻辑
     fn draw(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // --- 1. 计算旋转角度 ---
-        // 使用程序运行以来的时间来驱动旋转
+        // 1. 驱动时间与旋转
         static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         let start_time = START_TIME.get_or_init(std::time::Instant::now);
         let elapsed = start_time.elapsed().as_secs_f32();
 
-        // --- 2. 准备数据（保持原来的逻辑，但增加对 w, h 的获取） ---
+        // 2. 获取当前的交换链图像和窗口尺寸
         let (image_view, w, h) = {
-            let renderer = self
-                .windows
-                .get_primary_renderer()
-                .ok_or("Renderer not found")?;
+            let renderer = self.windows.get_primary_renderer().ok_or("找不到渲染器")?;
             let extent = renderer.swapchain_image_view().image().extent();
             (
                 renderer.swapchain_image_view().clone(),
@@ -275,27 +338,10 @@ impl App {
             )
         };
 
-        // --- 3. 计算 3D 矩阵 ---
-        use cgmath::{Matrix4, Point3, Rad, Vector3};
+        // 3. 计算 3D 矩阵 (调用 compute_mvp 细分函数)
+        let (model, view, proj) = self.compute_mvp(w, h, elapsed);
 
-        // 模型矩阵：绕 Y 轴旋转
-        let model = Matrix4::from_angle_y(Rad(elapsed));
-
-        // 视图矩阵：相机放在 (0, 0, -2)，看向原点
-        let view = Matrix4::look_at_rh(
-            Point3::new(0.0, 0.0, -2.0),
-            Point3::new(0.0, 0.0, 0.0),
-            Vector3::unit_y(),
-        );
-
-        // 投影矩阵：处理透视和宽高比
-        let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), w / h, 0.01, 100.0);
-
-        // 注意：Vulkan 的 Y 轴是向下的，而 cgmath 默认向上，我们需要翻转一下投影矩阵的 Y
-        let mut proj = proj;
-        proj[1][1] *= -1.0;
-
-        // --- 4. 录制与呈现 (将矩阵传给 record_command_buffer) ---
+        // 4. 为当前图像创建帧缓冲 (Framebuffer)
         let framebuffer = Framebuffer::new(
             self.render_pass.as_ref().unwrap().clone(),
             FramebufferCreateInfo {
@@ -304,14 +350,16 @@ impl App {
             },
         )?;
 
-        // 修改你的 record_command_buffer 签名以接收矩阵
+        // 5. 录制命令 (调用 record_command_buffer)
         let command_buffer = self.record_command_buffer(framebuffer, w, h, model, view, proj)?;
 
-        // --- 第三阶段：重新获取可变借用来呈现 ---
+        // 6. 获取渲染器并呈现结果
         let renderer_mut = self
             .windows
             .get_primary_renderer_mut()
-            .ok_or("Renderer not found")?;
+            .ok_or("找不到渲染器")?;
+
+        // 获取 AcquireFuture 并执行
         let acquire_future = renderer_mut.acquire(None, |_| {})?;
 
         use vulkano::sync::GpuFuture;
@@ -320,6 +368,7 @@ impl App {
             .boxed();
 
         renderer_mut.present(future, true);
+
         Ok(())
     }
 
