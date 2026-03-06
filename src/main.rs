@@ -45,15 +45,21 @@ mod vs {
         ty: "vertex",
         src: r"
             #version 450
-            layout(location = 0) in vec2 position;
-            // 接收一个动态传入的宽高比
+            layout(location = 0) in vec3 position;
+            layout(location = 1) in vec3 color;
+
+            layout(location = 0) out vec3 v_color;
+
             layout(push_constant) uniform PushConstants {
-                float aspect_ratio;
-            } push_constants;
+                mat4 model;
+                mat4 view;
+                mat4 proj;
+            } push;
 
             void main() {
-                // 如果窗口很宽，我们就缩小 X 轴的显示比例
-                gl_Position = vec4(position.x / push_constants.aspect_ratio, position.y, 0.0, 1.0);
+                // 矩阵相乘：投影 * 视图 * 模型 * 顶点坐标
+                gl_Position = push.proj * push.view * push.model * vec4(position, 1.0);
+                v_color = color;
             }
         ",
     }
@@ -64,19 +70,38 @@ mod fs {
         ty: "fragment",
         src: r"
             #version 450
+            layout(location = 0) in vec3 v_color;
             layout(location = 0) out vec4 f_color;
             void main() {
-                f_color = vec4(1.0, 0.5, 0.2, 1.0); // 橘色
+                f_color = vec4(v_color, 1.0);
             }
         ",
     }
 }
 
+// 使用 3D 坐标和 RGB 颜色
 #[derive(BufferContents, Vertex)]
 #[repr(C)]
 struct MyVertex {
-    #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
+    #[format(R32G32B32_SFLOAT)]
+    position: [f32; 3],
+    #[format(R32G32B32_SFLOAT)]
+    color: [f32; 3],
+}
+
+// 定义 Push Constants，包含我们的 MVP 矩阵
+#[repr(C)]
+#[derive(BufferContents)] // 必须派生这个才能传给 Vulkan
+struct PushConstants {
+    model: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+}
+
+#[repr(C)]
+struct SceneConstants {
+    view_proj: [[f32; 4]; 4],
+    model: [[f32; 4]; 4],
 }
 
 struct App {
@@ -139,14 +164,17 @@ impl App {
         // --- 创建顶点缓存 ---
         let vertices = [
             MyVertex {
-                position: [0.0, -0.5],
-            },
+                position: [0.0, -0.5, 0.0],
+                color: [1.0, 0.0, 0.0],
+            }, // 红色顶点
             MyVertex {
-                position: [-0.5, 0.5],
-            },
+                position: [-0.5, 0.5, 0.0],
+                color: [0.0, 1.0, 0.0],
+            }, // 绿色顶点
             MyVertex {
-                position: [0.5, 0.5],
-            },
+                position: [0.5, 0.5, 0.0],
+                color: [0.0, 0.0, 1.0],
+            }, // 蓝色顶点
         ];
         self.vertex_buffer = Some(
             Buffer::from_iter(
@@ -314,7 +342,27 @@ impl App {
                     self.pipeline.as_ref().unwrap().layout().clone(),
                     0,
                     vs::PushConstants {
-                        aspect_ratio: w / h,
+                        // 1. 删除 aspect_ratio，因为 Shader 里已经没这个字段了
+
+                        // 2. 使用单位矩阵代替 todo!()，保证程序能通过编译并运行
+                        model: [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                        view: [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                        proj: [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
                     },
                 )?
                 .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())?
