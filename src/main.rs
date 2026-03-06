@@ -255,7 +255,13 @@ impl App {
 
     /// 抽屉 3：每一帧的渲染逻辑
     fn draw(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // --- 第一阶段：只拿我们需要的数据，然后立即放开 self ---
+        // --- 1. 计算旋转角度 ---
+        // 使用程序运行以来的时间来驱动旋转
+        static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start_time = START_TIME.get_or_init(std::time::Instant::now);
+        let elapsed = start_time.elapsed().as_secs_f32();
+
+        // --- 2. 准备数据（保持原来的逻辑，但增加对 w, h 的获取） ---
         let (image_view, w, h) = {
             let renderer = self
                 .windows
@@ -267,9 +273,29 @@ impl App {
                 extent[0] as f32,
                 extent[1] as f32,
             )
-        }; // renderer 的借用在这里结束了
+        };
 
-        // --- 第二阶段：录制指令（此时 self 是自由的） ---
+        // --- 3. 计算 3D 矩阵 ---
+        use cgmath::{Matrix4, Point3, Rad, Vector3};
+
+        // 模型矩阵：绕 Y 轴旋转
+        let model = Matrix4::from_angle_y(Rad(elapsed));
+
+        // 视图矩阵：相机放在 (0, 0, -2)，看向原点
+        let view = Matrix4::look_at_rh(
+            Point3::new(0.0, 0.0, -2.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::unit_y(),
+        );
+
+        // 投影矩阵：处理透视和宽高比
+        let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), w / h, 0.01, 100.0);
+
+        // 注意：Vulkan 的 Y 轴是向下的，而 cgmath 默认向上，我们需要翻转一下投影矩阵的 Y
+        let mut proj = proj;
+        proj[1][1] *= -1.0;
+
+        // --- 4. 录制与呈现 (将矩阵传给 record_command_buffer) ---
         let framebuffer = Framebuffer::new(
             self.render_pass.as_ref().unwrap().clone(),
             FramebufferCreateInfo {
@@ -278,7 +304,8 @@ impl App {
             },
         )?;
 
-        let command_buffer = self.record_command_buffer(framebuffer, w, h)?;
+        // 修改你的 record_command_buffer 签名以接收矩阵
+        let command_buffer = self.record_command_buffer(framebuffer, w, h, model, view, proj)?;
 
         // --- 第三阶段：重新获取可变借用来呈现 ---
         let renderer_mut = self
@@ -302,12 +329,21 @@ impl App {
         fb: Arc<Framebuffer>,
         w: f32,
         h: f32,
+        model: cgmath::Matrix4<f32>,
+        view: cgmath::Matrix4<f32>,
+        proj: cgmath::Matrix4<f32>,
     ) -> Result<Arc<PrimaryAutoCommandBuffer>, Box<dyn std::error::Error>> {
         let mut builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.context.graphics_queue().queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )?;
+
+        let push_constants = vs::PushConstants {
+            model: model.into(),
+            view: view.into(),
+            proj: proj.into(),
+        };
 
         unsafe {
             builder
@@ -341,29 +377,7 @@ impl App {
                 .push_constants(
                     self.pipeline.as_ref().unwrap().layout().clone(),
                     0,
-                    vs::PushConstants {
-                        // 1. 删除 aspect_ratio，因为 Shader 里已经没这个字段了
-
-                        // 2. 使用单位矩阵代替 todo!()，保证程序能通过编译并运行
-                        model: [
-                            [1.0, 0.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 0.0],
-                            [0.0, 0.0, 0.0, 1.0],
-                        ],
-                        view: [
-                            [1.0, 0.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 0.0],
-                            [0.0, 0.0, 0.0, 1.0],
-                        ],
-                        proj: [
-                            [1.0, 0.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0, 0.0],
-                            [0.0, 0.0, 1.0, 0.0],
-                            [0.0, 0.0, 0.0, 1.0],
-                        ],
-                    },
+                    push_constants, // 现在这个变量被找到了！
                 )?
                 .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())?
                 .draw(3, 1, 0, 0)?
