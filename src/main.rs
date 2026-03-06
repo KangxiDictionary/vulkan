@@ -27,9 +27,9 @@ struct App {
     context: Arc<VulkanoContext>,
     windows: VulkanoWindows,
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
+    index_buffer: Option<Subbuffer<[u32]>>, // 新增此行
     pipeline: Option<Arc<GraphicsPipeline>>,
     render_pass: Option<Arc<RenderPass>>,
-    // 新增：持久化的深度图像视图
     depth_view: Option<Arc<vulkano::image::view::ImageView>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
@@ -98,168 +98,64 @@ impl App {
 
     fn init_resources(&mut self) {
         let device = self.context.device().clone();
+        let allocator = self.context.memory_allocator().clone();
 
-        // --- 1. 必须初始化顶点数据，否则 draw() 会崩溃 ---
-        // --- 定义立方体顶点 (每个面 6 个点) ---
+        // 1. 定义立方体的 8 个顶点（不再是 36 个）
         let vertices = vec![
-            // 前面 (Z = 0.5)
             MyVertex {
                 position: [-0.5, -0.5, 0.5],
                 color: [1.0, 0.0, 0.0],
-            },
+            }, // 0
             MyVertex {
                 position: [0.5, -0.5, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
+                color: [0.0, 1.0, 0.0],
+            }, // 1
             MyVertex {
                 position: [0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
+                color: [0.0, 0.0, 1.0],
+            }, // 2
             MyVertex {
                 position: [-0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, 0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            // 后面 (Z = -0.5)
+                color: [1.0, 1.0, 0.0],
+            }, // 3
             MyVertex {
                 position: [-0.5, -0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [-0.5, 0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            // 左面
-            MyVertex {
-                position: [-0.5, 0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, 0.5, -0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, -0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, -0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, 0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            // 右面
-            MyVertex {
-                position: [0.5, 0.5, 0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, -0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, -0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, -0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, 0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, 0.5],
-                color: [1.0, 1.0, 0.0],
-            },
-            // 上面
-            MyVertex {
-                position: [-0.5, -0.5, -0.5],
-                color: [0.0, 1.0, 1.0],
-            },
+                color: [1.0, 0.0, 1.0],
+            }, // 4
             MyVertex {
                 position: [0.5, -0.5, -0.5],
                 color: [0.0, 1.0, 1.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, 0.5],
-                color: [0.0, 1.0, 1.0],
-            },
-            MyVertex {
-                position: [0.5, -0.5, 0.5],
-                color: [0.0, 1.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, 0.5],
-                color: [0.0, 1.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, -0.5, -0.5],
-                color: [0.0, 1.0, 1.0],
-            },
-            // 下面
-            MyVertex {
-                position: [-0.5, 0.5, -0.5],
-                color: [1.0, 0.0, 1.0],
-            },
+            }, // 5
             MyVertex {
                 position: [0.5, 0.5, -0.5],
-                color: [1.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 1.0],
-            },
-            MyVertex {
-                position: [-0.5, 0.5, 0.5],
-                color: [1.0, 0.0, 1.0],
-            },
+                color: [1.0, 1.0, 1.0],
+            }, // 6
             MyVertex {
                 position: [-0.5, 0.5, -0.5],
-                color: [1.0, 0.0, 1.0],
-            },
+                color: [0.5, 0.5, 0.5],
+            }, // 7
         ];
-        // 调用 renderer::buffer 模块
+
+        // 2. 定义索引（每 3 个索引构成一个三角形，共 12 个三角形）
+        let indices = vec![
+            0, 1, 2, 2, 3, 0, // 前
+            1, 5, 6, 6, 2, 1, // 右
+            7, 6, 5, 5, 4, 7, // 后
+            4, 0, 3, 3, 7, 4, // 左
+            4, 5, 1, 1, 0, 4, // 下
+            3, 2, 6, 6, 7, 3, // 上
+        ];
+
         self.vertex_buffer = Some(renderer::buffer::create_vertex_buffer(
-            self.context.memory_allocator().clone(),
+            allocator.clone(),
             vertices,
         ));
+        self.index_buffer = Some(renderer::buffer::create_index_buffer(
+            allocator.clone(),
+            indices,
+        ));
 
-        // --- 2. 创建 Render Pass ---
+        // 3. 创建 Render Pass
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
             attachments: {
@@ -269,7 +165,6 @@ impl App {
                     load_op: Clear,
                     store_op: Store,
                 },
-                // 必须增加这个深度附件，格式建议与主流设备匹配
                 depth: {
                     format: vulkano::format::Format::D16_UNORM,
                     samples: 1,
@@ -279,18 +174,18 @@ impl App {
             },
             pass: {
                 color: [color],
-                depth_stencil: {depth}, // 关联深度附件
+                depth_stencil: {depth},
             }
         )
         .unwrap();
 
-        // --- 3. 加载着色器并创建管线 ---
+        // 4. 加载着色器
         let vs_entry = shaders::vs::load(device.clone())
-            .expect("顶点着色器加载失败。")
+            .expect("顶点着色器加载失败")
             .entry_point("main")
             .unwrap();
         let fs_entry = shaders::fs::load(device.clone())
-            .unwrap()
+            .expect("片元着色器加载失败")
             .entry_point("main")
             .unwrap();
 
@@ -302,16 +197,13 @@ impl App {
         ));
 
         self.render_pass = Some(render_pass);
-        println!("GPU 资源模块化初始化成功！");
-
         let extent = self
             .windows
             .get_primary_renderer()
-            .expect("Renderer 尚未就绪")
+            .unwrap()
             .swapchain_image_view()
             .image()
             .extent();
-
         self.depth_view = Some(self.create_depth_view(extent));
     }
 
@@ -388,8 +280,6 @@ impl App {
             vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
         )?;
 
-        // --- 核心修改：构造包含完整 MVP 的 PushConstants ---
-        // 注意：vs::PushConstants 是由 vulkano_shaders 自动生成的结构体
         let push_constants = vs::PushConstants {
             model: model.into(),
             view: view.into(),
@@ -400,10 +290,7 @@ impl App {
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
-                        clear_values: vec![
-                            Some([0.1, 0.2, 0.3, 1.0].into()), // 颜色缓冲清除值
-                            Some(1f32.into()), // 5. 核心修改：深度缓冲清除值 (1.0 是最远)
-                        ],
+                        clear_values: vec![Some([0.1, 0.2, 0.3, 1.0].into()), Some(1f32.into())],
                         ..RenderPassBeginInfo::framebuffer(fb)
                     },
                     SubpassBeginInfo::default(),
@@ -433,8 +320,12 @@ impl App {
                     0,
                     push_constants,
                 )?
+                // 核心修改：绑定顶点缓冲
                 .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())?
-                .draw(36, 1, 0, 0)?
+                // 核心修改：绑定索引缓冲
+                .bind_index_buffer(self.index_buffer.as_ref().unwrap().clone())?
+                // 核心修改：使用 draw_indexed。参数 36 是索引数量（12个三角形 * 3）
+                .draw_indexed(36, 1, 0, 0, 0)?
                 .end_render_pass(Default::default())?;
         }
         Ok(builder.build()?)
@@ -455,6 +346,7 @@ fn main() {
         context: context_arc,
         windows: VulkanoWindows::default(),
         vertex_buffer: None,
+        index_buffer: None, // 新增此行
         pipeline: None,
         render_pass: None,
         depth_view: None,

@@ -33,3 +33,24 @@ pub fn create_vertex_buffer(
     )
     .expect("创建顶点缓存失败")
 }
+
+// 新增：创建索引缓存函数
+pub fn create_index_buffer(
+    allocator: Arc<StandardMemoryAllocator>,
+    indices: Vec<u32>,
+) -> Subbuffer<[u32]> {
+    Buffer::from_iter(
+        allocator,
+        BufferCreateInfo {
+            usage: BufferUsage::INDEX_BUFFER, // 核心区别：声明为 INDEX_BUFFER
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        indices,
+    )
+    .expect("创建索引缓存失败")
+}
