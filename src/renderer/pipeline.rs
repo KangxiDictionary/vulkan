@@ -1,18 +1,16 @@
-use std::sync::Arc;
-use vulkano::pipeline::graphics::vertex_input::Vertex; // 必须引入这个 Trait
-
-// src/renderer/pipeline.rs
 use crate::renderer::buffer::MyVertex;
+use std::sync::Arc;
 use vulkano::{
     pipeline::{
         DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
-            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            color_blend::{ColorBlendAttachmentState, ColorBlendState}, // 必须包含
+            depth_stencil::{DepthState, DepthStencilState},
             input_assembly::InputAssemblyState,
-            multisample::MultisampleState,
+            multisample::MultisampleState, // 必须包含
             rasterization::RasterizationState,
-            vertex_input::VertexDefinition,
+            vertex_input::{Vertex, VertexDefinition},
             viewport::ViewportState,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
@@ -20,8 +18,6 @@ use vulkano::{
     render_pass::{RenderPass, Subpass},
 };
 
-// 1. 增加 pub 让 main.rs 可以访问
-// 2. 移除 &self，改传显式参数 device
 pub fn create_graphics_pipeline(
     device: Arc<vulkano::device::Device>,
     render_pass: Arc<RenderPass>,
@@ -49,20 +45,30 @@ pub fn create_graphics_pipeline(
             vertex_input_state: Some(MyVertex::per_vertex().definition(&vs).unwrap()),
             input_assembly_state: Some(InputAssemblyState::default()),
             viewport_state: Some(ViewportState::default()),
-            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
-                .into_iter()
-                .collect(),
-            rasterization_state: Some(RasterizationState {
-                cull_mode: vulkano::pipeline::graphics::rasterization::CullMode::None,
-                ..RasterizationState::default()
+
+            // 1. 光栅化状态
+            rasterization_state: Some(RasterizationState::default()),
+
+            // 2. 深度测试状态 (使用非弃用接口)
+            depth_stencil_state: Some(DepthStencilState {
+                depth: Some(DepthState::simple()),
+                ..Default::default()
             }),
+
+            // 3. 多重采样状态 (解决你现在的报错)
             multisample_state: Some(MultisampleState::default()),
+
+            // 4. 颜色混合状态 (渲染到颜色附件所必须)
             color_blend_state: Some(ColorBlendState::with_attachment_states(
                 Subpass::from(render_pass.clone(), 0)
                     .unwrap()
                     .num_color_attachments(),
                 ColorBlendAttachmentState::default(),
             )),
+
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
             subpass: Some(Subpass::from(render_pass, 0).unwrap().into()),
             ..GraphicsPipelineCreateInfo::layout(layout)
         },

@@ -29,6 +29,8 @@ struct App {
     vertex_buffer: Option<Subbuffer<[MyVertex]>>,
     pipeline: Option<Arc<GraphicsPipeline>>,
     render_pass: Option<Arc<RenderPass>>,
+    // 新增：持久化的深度图像视图
+    depth_view: Option<Arc<vulkano::image::view::ImageView>>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
@@ -73,22 +75,182 @@ impl App {
         }
     }
 
+    // 专门用于创建与当前窗口大小匹配的深度图
+    fn create_depth_view(&self, extent: [u32; 3]) -> Arc<vulkano::image::view::ImageView> {
+        let depth_image = vulkano::image::Image::new(
+            self.context.memory_allocator().clone(),
+            vulkano::image::ImageCreateInfo {
+                image_type: vulkano::image::ImageType::Dim2d,
+                format: vulkano::format::Format::D16_UNORM, // 必须与 RenderPass 一致
+                extent,
+                usage: vulkano::image::ImageUsage::DEPTH_STENCIL_ATTACHMENT,
+                ..Default::default()
+            },
+            vulkano::memory::allocator::AllocationCreateInfo {
+                memory_type_filter: vulkano::memory::allocator::MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        vulkano::image::view::ImageView::new_default(depth_image).unwrap()
+    }
+
     fn init_resources(&mut self) {
         let device = self.context.device().clone();
 
         // --- 1. 必须初始化顶点数据，否则 draw() 会崩溃 ---
+        // --- 定义立方体顶点 (每个面 6 个点) ---
         let vertices = vec![
+            // 前面 (Z = 0.5)
             MyVertex {
-                position: [0.0, -0.5, 0.0],
+                position: [-0.5, -0.5, 0.5],
                 color: [1.0, 0.0, 0.0],
             },
             MyVertex {
-                position: [-0.5, 0.5, 0.0],
+                position: [0.5, -0.5, 0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, 0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            // 后面 (Z = -0.5)
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
                 color: [0.0, 1.0, 0.0],
             },
             MyVertex {
-                position: [0.5, 0.5, 0.0],
+                position: [0.5, -0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            // 左面
+            MyVertex {
+                position: [-0.5, 0.5, 0.5],
                 color: [0.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, -0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, 0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, 0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            // 右面
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, -0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, -0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, -0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, 0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 1.0, 0.0],
+            },
+            // 上面
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, -0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, 0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, -0.5, 0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, 0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, -0.5, -0.5],
+                color: [0.0, 1.0, 1.0],
+            },
+            // 下面
+            MyVertex {
+                position: [-0.5, 0.5, -0.5],
+                color: [1.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, -0.5],
+                color: [1.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, 0.5],
+                color: [1.0, 0.0, 1.0],
+            },
+            MyVertex {
+                position: [-0.5, 0.5, -0.5],
+                color: [1.0, 0.0, 1.0],
             },
         ];
         // 调用 renderer::buffer 模块
@@ -106,15 +268,25 @@ impl App {
                     samples: 1,
                     load_op: Clear,
                     store_op: Store,
+                },
+                // 必须增加这个深度附件，格式建议与主流设备匹配
+                depth: {
+                    format: vulkano::format::Format::D16_UNORM,
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: DontCare,
                 }
             },
-            pass: { color: [color], depth_stencil: {} }
+            pass: {
+                color: [color],
+                depth_stencil: {depth}, // 关联深度附件
+            }
         )
         .unwrap();
 
         // --- 3. 加载着色器并创建管线 ---
         let vs_entry = shaders::vs::load(device.clone())
-            .unwrap()
+            .expect("顶点着色器加载失败。")
             .entry_point("main")
             .unwrap();
         let fs_entry = shaders::fs::load(device.clone())
@@ -131,6 +303,16 @@ impl App {
 
         self.render_pass = Some(render_pass);
         println!("GPU 资源模块化初始化成功！");
+
+        let extent = self
+            .windows
+            .get_primary_renderer()
+            .expect("Renderer 尚未就绪")
+            .swapchain_image_view()
+            .image()
+            .extent();
+
+        self.depth_view = Some(self.create_depth_view(extent));
     }
 
     fn draw(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -138,34 +320,47 @@ impl App {
         let start_time = START_TIME.get_or_init(std::time::Instant::now);
         let elapsed = start_time.elapsed().as_secs_f32();
 
-        let (image_view, w, h) = {
+        // 1. 获取当前交换链图像及其尺寸
+        let (image_view, extent_u32) = {
             let renderer = self.windows.get_primary_renderer().ok_or("找不到渲染器")?;
-            let extent = renderer.swapchain_image_view().image().extent();
-            (
-                renderer.swapchain_image_view().clone(),
-                extent[0] as f32,
-                extent[1] as f32,
-            )
+            let ev = renderer.swapchain_image_view();
+            (ev.clone(), ev.image().extent())
+        };
+        let w = extent_u32[0] as f32;
+        let h = extent_u32[1] as f32;
+
+        // 2. 核心优化：检查并更新深度图
+        // 如果当前窗口尺寸与深度图尺寸不符（比如缩放了窗口），则重新创建
+        let current_depth_view = if self.depth_view.as_ref().unwrap().image().extent() != extent_u32
+        {
+            let new_view = self.create_depth_view(extent_u32);
+            self.depth_view = Some(new_view.clone());
+            new_view
+        } else {
+            self.depth_view.as_ref().unwrap().clone()
         };
 
-        // 调用 math/camera.rs 计算 MVP
+        // 3. 计算 MVP 矩阵
         let (model, view, proj) = math::camera::compute_mvp(w, h, elapsed);
 
+        // 4. 创建 Framebuffer：传入颜色附件和深度附件
+        // 这里的顺序 [image_view, current_depth_view] 必须与 RenderPass 的定义一致
         let framebuffer = Framebuffer::new(
             self.render_pass.as_ref().unwrap().clone(),
             FramebufferCreateInfo {
-                attachments: vec![image_view],
+                attachments: vec![image_view, current_depth_view],
                 ..Default::default()
             },
         )?;
 
-        // 这里的录制命令建议保留在 App 里或者移到 renderer/mod.rs
+        // 5. 录制并提交指令
         let command_buffer = self.record_command_buffer(framebuffer, w, h, model, view, proj)?;
 
         let renderer_mut = self
             .windows
             .get_primary_renderer_mut()
             .ok_or("找不到渲染器")?;
+
         let acquire_future = renderer_mut.acquire(None, |_| {})?;
 
         use vulkano::sync::GpuFuture;
@@ -193,7 +388,8 @@ impl App {
             vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
         )?;
 
-        // 对应 shaders/vert.glsl 里的布局
+        // --- 核心修改：构造包含完整 MVP 的 PushConstants ---
+        // 注意：vs::PushConstants 是由 vulkano_shaders 自动生成的结构体
         let push_constants = vs::PushConstants {
             model: model.into(),
             view: view.into(),
@@ -204,11 +400,14 @@ impl App {
             builder
                 .begin_render_pass(
                     RenderPassBeginInfo {
-                        clear_values: vec![Some([0.1, 0.2, 0.3, 1.0].into())],
+                        clear_values: vec![
+                            Some([0.1, 0.2, 0.3, 1.0].into()), // 颜色缓冲清除值
+                            Some(1f32.into()), // 5. 核心修改：深度缓冲清除值 (1.0 是最远)
+                        ],
                         ..RenderPassBeginInfo::framebuffer(fb)
                     },
                     SubpassBeginInfo::default(),
-                )? // 1. 先开启 Render Pass
+                )?
                 .set_viewport(
                     0,
                     [vulkano::pipeline::graphics::viewport::Viewport {
@@ -218,7 +417,7 @@ impl App {
                     }]
                     .into_iter()
                     .collect(),
-                )? // 2. 设置视口
+                )?
                 .set_scissor(
                     0,
                     [vulkano::pipeline::graphics::viewport::Scissor {
@@ -227,7 +426,7 @@ impl App {
                     }]
                     .into_iter()
                     .collect(),
-                )? // 3. 设置剪裁矩形（修复上一个 VUID 错误）
+                )?
                 .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())?
                 .push_constants(
                     self.pipeline.as_ref().unwrap().layout().clone(),
@@ -235,8 +434,8 @@ impl App {
                     push_constants,
                 )?
                 .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())?
-                .draw(3, 1, 0, 0)? // 4. 此时 Draw 指令才有效
-                .end_render_pass(Default::default())?; // 5. 最后关闭
+                .draw(36, 1, 0, 0)?
+                .end_render_pass(Default::default())?;
         }
         Ok(builder.build()?)
     }
@@ -258,6 +457,7 @@ fn main() {
         vertex_buffer: None,
         pipeline: None,
         render_pass: None,
+        depth_view: None,
         command_buffer_allocator,
     };
 
