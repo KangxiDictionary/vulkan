@@ -72,6 +72,94 @@ struct MyVertex {
     position: [f32; 2],
 }
 
+impl App {
+    // 将复杂的渲染逻辑抽离到这里
+    fn draw(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let renderer = self
+            .windows
+            .get_primary_renderer_mut()
+            .ok_or("无法获取渲染器")?;
+
+        // 1. 准备数据（减少缩进的第一步：提前计算并处理 Result）
+        let image_view = renderer.swapchain_image_view();
+        let image_extent = image_view.image().extent();
+        let width = image_extent[0] as f32;
+        let height = image_extent[1] as f32;
+        let aspect_ratio = width / height;
+
+        let acquire_future = match renderer.acquire(None, |_| {}) {
+            Ok(res) => res,
+            Err(_) => return Ok(()), // 交换链过期时直接跳过本帧
+        };
+
+        let framebuffer = vulkano::render_pass::Framebuffer::new(
+            self.render_pass.as_ref().unwrap().clone(),
+            vulkano::render_pass::FramebufferCreateInfo {
+                attachments: vec![image_view.clone()],
+                ..Default::default()
+            },
+        )?;
+
+        // 2. 录制指令（使用这种风格可以避免深度缩进）
+        let mut builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
+            self.command_buffer_allocator.clone(),
+            self.context.graphics_queue().queue_family_index(),
+            vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
+        )?;
+
+        // 将 unsafe 块限制在最小范围，或者直接包裹链式调用
+        unsafe {
+            builder
+                .begin_render_pass(
+                    vulkano::command_buffer::RenderPassBeginInfo {
+                        clear_values: vec![Some([0.1, 0.2, 0.3, 1.0].into())],
+                        ..vulkano::command_buffer::RenderPassBeginInfo::framebuffer(framebuffer)
+                    },
+                    vulkano::command_buffer::SubpassBeginInfo::default(),
+                )?
+                .set_viewport(
+                    0,
+                    [vulkano::pipeline::graphics::viewport::Viewport {
+                        offset: [0.0, 0.0],
+                        extent: [width, height],
+                        depth_range: 0.0..=1.0,
+                    }]
+                    .into_iter()
+                    .collect(),
+                )?
+                .set_scissor(
+                    0,
+                    [vulkano::pipeline::graphics::viewport::Scissor {
+                        offset: [0, 0],
+                        extent: [width as u32, height as u32],
+                    }]
+                    .into_iter()
+                    .collect(),
+                )?
+                .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())?
+                .push_constants(
+                    self.pipeline.as_ref().unwrap().layout().clone(),
+                    0,
+                    vs::PushConstants { aspect_ratio },
+                )?
+                .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())?
+                .draw(3, 1, 0, 0)?
+                .end_render_pass(Default::default())?;
+        }
+
+        let command_buffer = builder.build()?;
+
+        // 3. 提交与呈现
+        use vulkano::sync::GpuFuture;
+        let execution_future = acquire_future
+            .then_execute(self.context.graphics_queue().clone(), command_buffer)?
+            .boxed();
+
+        renderer.present(execution_future, true);
+        Ok(())
+    }
+}
+
 struct App {
     context: Arc<VulkanoContext>,
     windows: VulkanoWindows,
@@ -214,106 +302,13 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                println!("窗口关闭中...");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                let renderer = self.windows.get_primary_renderer_mut().unwrap();
-
-                // 1. 获取物理像素尺寸（这是最准确的数据源，防止三角形“乱跑”）
-                let image_extent = renderer.swapchain_image_view().image().extent();
-                let width = image_extent[0] as f32;
-                let height = image_extent[1] as f32;
-                let aspect_ratio = width / height;
-
-                // 2. 获取 Future
-                let acquire_future = match renderer.acquire(None, |_| {}) {
-                    Ok(res) => res,
-                    Err(_) => return,
-                };
-
-                // 3. 创建帧缓冲
-                let framebuffer = vulkano::render_pass::Framebuffer::new(
-                    self.render_pass.as_ref().unwrap().clone(),
-                    vulkano::render_pass::FramebufferCreateInfo {
-                        attachments: vec![renderer.swapchain_image_view().clone()],
-                        ..Default::default()
-                    },
-                )
-                .expect("创建 Framebuffer 失败");
-
-                // 4. 录制绘图指令（注意严密的链式调用顺序）
-                let mut builder = vulkano::command_buffer::AutoCommandBufferBuilder::primary(
-                    self.command_buffer_allocator.clone(),
-                    self.context.graphics_queue().queue_family_index(),
-                    vulkano::command_buffer::CommandBufferUsage::OneTimeSubmit,
-                )
-                .unwrap();
-
-                unsafe {
-                    builder
-                        .begin_render_pass(
-                            vulkano::command_buffer::RenderPassBeginInfo {
-                                clear_values: vec![Some([0.1, 0.2, 0.3, 1.0].into())],
-                                ..vulkano::command_buffer::RenderPassBeginInfo::framebuffer(
-                                    framebuffer,
-                                )
-                            },
-                            vulkano::command_buffer::SubpassBeginInfo::default(),
-                        )
-                        .unwrap()
-                        // 必须先设置视口和裁剪
-                        .set_viewport(
-                            0,
-                            [vulkano::pipeline::graphics::viewport::Viewport {
-                                offset: [0.0, 0.0],
-                                extent: [width, height],
-                                depth_range: 0.0..=1.0,
-                            }]
-                            .into_iter()
-                            .collect(),
-                        )
-                        .unwrap()
-                        .set_scissor(
-                            0,
-                            [vulkano::pipeline::graphics::viewport::Scissor {
-                                offset: [0, 0],
-                                extent: [width as u32, height as u32],
-                            }]
-                            .into_iter()
-                            .collect(),
-                        )
-                        .unwrap()
-                        // 绑定管线（必须在 draw 之前）
-                        .bind_pipeline_graphics(self.pipeline.as_ref().unwrap().clone())
-                        .unwrap()
-                        // 推送常量
-                        .push_constants(
-                            self.pipeline.as_ref().unwrap().layout().clone(),
-                            0,
-                            vs::PushConstants { aspect_ratio },
-                        )
-                        .unwrap()
-                        // 绑定顶点缓冲
-                        .bind_vertex_buffers(0, self.vertex_buffer.as_ref().unwrap().clone())
-                        .unwrap()
-                        // 最后才是 draw
-                        .draw(3, 1, 0, 0)
-                        .unwrap()
-                        .end_render_pass(Default::default())
-                        .unwrap();
+                // 这里的逻辑变得非常清爽
+                if let Err(e) = self.draw() {
+                    eprintln!("渲染失败: {:?}", e);
                 }
-
-                let command_buffer = builder.build().unwrap();
-
-                // 5. 执行并呈现
-                use vulkano::sync::GpuFuture;
-                let execution_future = acquire_future
-                    .then_execute(self.context.graphics_queue().clone(), command_buffer)
-                    .unwrap()
-                    .boxed();
-
-                renderer.present(execution_future, true);
             }
             _ => (),
         }
